@@ -23,11 +23,8 @@ class ClientFrame:
         # Tk
         self.root = tk.Tk()
         self.root.wm_title("MU22 Battery Client")
-        # Figure
-        fig = Figure(figsize=(16, 4), dpi=72)
-        sub = fig.add_subplot()
         # Tk Canvas
-        canvas = FigureCanvasTkAgg(fig, master=self.root)
+        canvas = FigureCanvasTkAgg(Figure(figsize=(16, 4), dpi=72), master=self.root)
         canvas.get_tk_widget().grid(row = 0, column = 0, columnspan=3)
         # Buttons
         tk.Button(master=self.root, text="START", command=self.start_command).grid(row=1, column=0, pady=10)
@@ -36,7 +33,7 @@ class ClientFrame:
         # Disable resize
         self.root.resizable(False,False)
         # Simulation instance
-        self.sim = Simulation(sub, canvas)
+        self.sim = Simulation(canvas)
 
     def start_command(self):
         self.sim.start()
