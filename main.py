@@ -1,6 +1,9 @@
-"""
-MU22 battery client.
-"""
+# -*- coding: utf-8 -*-
+#
+# MU22 battery client.
+#
+# Copyright 2024, Ben Bright <nooc@users.noreply.github.com>
+
 
 from mu22client.mainframe import ClientFrame
 

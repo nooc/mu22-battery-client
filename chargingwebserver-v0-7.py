@@ -54,6 +54,7 @@ sim_min=0
 seconds_per_hour=4
 # define a lock to synchronize access to the global variable
 global_lock = threading.Lock()
+thread_running = False
 app = Flask(__name__)
 
 def main_prg():
@@ -65,7 +66,9 @@ def main_prg():
     global ev_batt_max_capacity
     global base_current_load
     global seconds_per_hour
-    while True:
+    global thread_running
+    thread_running = True
+    while thread_running:
         base_current_load=base_load_residential_kwh[sim_hour]
         for i in range(0,seconds_per_hour):
             if ev_battery_charge_start_stopp:
@@ -191,9 +194,11 @@ def discharge_battery():
     else:
         return jsonify({'error': 'Unsupported HTTP method'})
 
-# start the increment_sum thread
-increment_sum_thread = threading.Thread(target=main_prg)
-increment_sum_thread.start()
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # start the increment_sum thread
+    increment_sum_thread = threading.Thread(target=main_prg)
+    increment_sum_thread.start()
+    app.run(debug=False)
+    thread_running = False
+    increment_sum_thread.join()

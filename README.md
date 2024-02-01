@@ -27,18 +27,20 @@ Total energy consumption < 11kW (3-phase, 16A).
 
 ## Usage
 
-Start the server locally:
+Make sure you're in repository root:
+```
+cd <repo-root>
+```
+
+Start the server that will listen on **127.0.0.1:5000**:
 
 ```
-cd <repo-root>/server
 python chargingwebserver-v0-7.py
 ```
-It will bind to **127.0.0.1:5000**.
 
 Start the client:
 
 ```
-cd <repo-root>/mu22client
 python main.py
 ```
 
