@@ -5,7 +5,9 @@
 # Copyright 2024, Ben Bright <nooc@users.noreply.github.com>
 #
 from typing import Literal
+
 from pydantic import BaseModel
+
 
 class ChargingInfo(BaseModel):
     

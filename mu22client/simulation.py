@@ -4,29 +4,28 @@
 #
 # Copyright 2024, Ben Bright <nooc@users.noreply.github.com>
 #
-from math import ceil
-from threading import Thread
 import time
-import tkinter
+from threading import Lock, Thread
 from typing import Callable, Literal
-from matplotlib.figure import Figure
 
-import numpy as np
 import requests as req
 from matplotlib.axes import Axes
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 
 from mu22client.models import ChargingError, ChargingInfo, FloatList
 
 BASE_URL = 'http://127.0.0.1:5000'
-UPDATE_INTERVAL = 1.5
+SLEEP_TIME = 0.2
 
+MAX_LOAD_KW = 11
 CHARGING_POWER_KW = 7.4
-EV_TARGET_CHARGE_RATIO = 0.8
+EV_TARGET_CHARGE_RATIO = 0.79
 EV_MAX_CAPACITY = 46.3
 
 class Simulation:
-    worker:Thread
+    lock = Lock()
+    worker:Thread = None
     running:bool
     soc_graph:Axes
     state_graph:Axes
@@ -37,14 +36,14 @@ class Simulation:
     energy_price:FloatList
     sim_type:Literal['price','load']
 
-    x_val:list[float]
-    y_val:list[float]
+    x_hour:list[float]
+    y_soc:list[float]
+    y_load:list[float]
 
     end_callback:Callable
 
     def __init__(self, canvas:FigureCanvasTkAgg, end_callback:Callable=None):
         self.end_callback = end_callback
-        self.worker = Thread(target=self.do_timer)
         self.running = False
         self.canvas = canvas
         self.fig = canvas.figure
@@ -83,8 +82,6 @@ class Simulation:
         self.soc_graph.set_xlim(**self.x_lim)
         self.soc_graph.set_ylim(**self.y_lim_soc)
         self.soc_graph.set_xticks(**x_tick)
-        self.soc_graph.set_title("Charging")
-        self.soc_graph.set_ylabel('SOC %')
         
         # get base load
         self.base_load_residential_kwh = self.__get('/baseload')
@@ -115,24 +112,50 @@ class Simulation:
         self.sim_type = type
         if type=='price': self.soc_graph.set_title("Charging based on price.")
         elif type=='load': self.soc_graph.set_title("Charging based on load.")
-        self.x_val = []
-        self.y_val = []
+        self.x_hour = []
+        self.y_soc = []
         # start update 
+        self.worker = Thread(target=self.do_timer)
         self.worker.start()
 
     def abort(self):
         # stop timer
-        self.running = False
-        if self.worker.is_alive(): self.worker.join()
-        # stop charge
-        self.__post('/charge',{'charging':'off'})
+        with self.lock:
+            self.running = False
+        while self.worker:
+            time.sleep(SLEEP_TIME)
 
     def __get_required_charging_time(self, current_capacity) -> int:
+        """Return te time needed to charge battery at CHARGING_POWER_KW.
+
+        Args:
+            current_capacity (float): Current battery capacity.
+
+        Returns:
+            int: hours
+        """
         return int((EV_MAX_CAPACITY - current_capacity) / CHARGING_POWER_KW)
     
-    def calculate_minimal_load_hours(self, info:ChargingInfo) -> list[bool]:
+    def __can_charge_less_than_max_power(self, hour_of_day:int) -> bool:
+        """Return true if charging at CHARGING_POWER_KW is within allowed output capacity
+        based on the base load profile.
+
+        Args:
+            hour_of_day (int): Hour (0-23)
+
+        Returns:
+            bool: true or false
         """
-        TODO: Get best hours for minimizing load on system.
+        return MAX_LOAD_KW > (self.base_load_residential_kwh[hour_of_day] + CHARGING_POWER_KW)
+    
+    def calculate_minimal_load_hours(self, info:ChargingInfo) -> list[bool]:
+        """Get charging hours for minimizing load on system.
+
+        Args:
+            info (ChargingInfo): Current state
+
+        Returns:
+            list[bool]: Hours-of-day on/off schedule.
         """
         # Hours needed to charge. Round up to even hours, N.
         hours_needed = self.__get_required_charging_time(info.battery_capacity_kWh)
@@ -145,13 +168,19 @@ class Simulation:
         # Pick the first N hours from the sorted list and enable those indexes. 
         hourly_state = [False]*24
         for i in range(0,hours_needed):
-            hourly_state[sorted_load[i][0]] = True
+            hour_of_day,_ = sorted_load[i]
+            hourly_state[hour_of_day] = self.__can_charge_less_than_max_power(hour_of_day)
         # Now we have our hourly charging states for the N minimal base load hours.
         return hourly_state
 
     def calculate_minimal_price_hours(self, info:ChargingInfo) -> list[bool]:
-        """
-        TODO: Get best hours for minimizing charging price.
+        """Get charging hours for minimizing charging price.
+
+        Args:
+            info (ChargingInfo): Current state
+
+        Returns:
+            list[bool]: Hours-of-day on/off schedule.
         """
         # Hours needed to charge. Round up to even hours, N.
         hours_needed = self.__get_required_charging_time(info.battery_capacity_kWh)
@@ -164,21 +193,29 @@ class Simulation:
         # Pick the first N hours from the sorted list and enable those indexes. 
         hourly_state = [False]*24
         for i in range(0,hours_needed):
-            hourly_state[sorted_price[i][0]] = True
+            hour_of_day,_ = sorted_price[i]
+            hourly_state[hour_of_day] = self.__can_charge_less_than_max_power(hour_of_day)
         # Now we have our hourly charging states for the N minimal base load hours.
         return hourly_state
 
     def do_timer(self):
+        """Simulation thread function.
+        Gets data, does calculations and updated graph.
+        """
+        self.running = True
         # setup
         target_kWh = EV_MAX_CAPACITY * EV_TARGET_CHARGE_RATIO
         # state
         charging = False
-        self.running = True
-        last_sim_hour = 0.0
+        last_sim_hour = 0
+        #initial value: 20%
+        self.x_hour = [0]
+        self.y_soc = [20]
         # reset
         self.__post('/discharge',{'discharging':'on'})
         info:ChargingInfo = self.__get('/info',ChargingInfo)
-        # charging hours based on simulation type
+        self.y_load = [100*info.base_current_load/MAX_LOAD_KW]
+        # charging schedule based on simulation type
         if self.sim_type=='price':
             self.state_graph.set_title("Schedule optimized based on price.")
             charging_hours=self.calculate_minimal_price_hours(info)
@@ -187,37 +224,53 @@ class Simulation:
             charging_hours=self.calculate_minimal_load_hours(info)
         self.state_graph.stairs(charging_hours)
         # loop
-        t = time.time()
-        while self.running:
-            if time.time() >= t:
-                t += UPDATE_INTERVAL
-                # get state
-                info = self.__get('/info',ChargingInfo)
-                # time to decimal hours
-                sim_hour = info.sim_time_hour + info.sim_time_min/60
-                if sim_hour > 24 or sim_hour < last_sim_hour:
-                    sim_hour = 24 # do this to plot last value
-                else: last_sim_hour = sim_hour
-                # check soc
-                if charging and (info.battery_capacity_kWh >= target_kWh or not charging_hours[info.sim_time_hour]):
-                    charging = False
-                    self.__post('/charge',{'charging':'off'})
-                elif not charging and info.battery_capacity_kWh < target_kWh and charging_hours[info.sim_time_hour]:
-                    charging = True
-                    self.__post('/charge',{'charging':'on'})
-                self.x_val.append(sim_hour)
-                self.y_val.append(100*info.battery_capacity_kWh / EV_MAX_CAPACITY)
-                self.soc_graph.cla()
-                self.soc_graph.plot(self.x_val, self.y_val)
-                self.soc_graph.set_xlim(**self.x_lim)
-                self.soc_graph.set_ylim(**self.y_lim_soc)
-                self.canvas.draw()
-                if sim_hour >= 24: break
-            sleep_time = t-time.time()
-            if sleep_time>0: time.sleep(sleep_time)
-        # while
-        self.running = False
+        while True:
+            with self.lock:
+                if not self.running: break
+            # get state
+            info = self.__get('/info',ChargingInfo)
+
+            # time to decimal hours
+            if info.sim_time_hour < last_sim_hour:
+                info.sim_time_hour = 24 # do this to plot last value
+            else: last_sim_hour = info.sim_time_hour
+            indexed_hour = info.sim_time_hour if info.sim_time_hour!=24 else 23
+
+            # adjust charging based on soc and schedule
+            if charging and (info.battery_capacity_kWh >= target_kWh or not charging_hours[indexed_hour]):
+                charging = False
+                self.__post('/charge',{'charging':'off'})
+            elif not charging and info.battery_capacity_kWh < target_kWh and charging_hours[indexed_hour]:
+                charging = True
+                self.__post('/charge',{'charging':'on'})
+
+            # append simulation data to graph
+            self.x_hour.append(info.sim_time_hour + info.sim_time_min/60)
+
+            curr_sock = 100*info.battery_capacity_kWh / EV_MAX_CAPACITY
+            self.y_soc.append(curr_sock)
+
+            curr_load = 100*(self.base_load_residential_kwh[indexed_hour] + 
+                             (CHARGING_POWER_KW if charging else 0)) / MAX_LOAD_KW
+            self.y_load.append(curr_load)
+
+            # draw
+            self.soc_graph.cla()
+            self.soc_graph.plot(self.x_hour, self.y_soc, label=f'Current SOC: {int(curr_sock)} %')
+            self.soc_graph.plot(self.x_hour, self.y_load, label=f'Current Load: {int(curr_load)} %')
+            self.soc_graph.set_title("State")
+            self.soc_graph.set_ylabel('Percent (%)')
+            self.soc_graph.legend(loc='upper left')
+            self.soc_graph.set_xlim(**self.x_lim)
+            self.soc_graph.set_ylim(**self.y_lim_soc)
+            self.canvas.draw()
+            # end of sim?
+            if info.sim_time_hour == 24: break
+            else: time.sleep(SLEEP_TIME)
+        # exit
+        if charging:
+            self.__post('/charge',{'charging':'off'})
+        with self.lock:
+            self.running = False
+        self.worker = None
         if self.end_callback: self.end_callback()
-
-
-
