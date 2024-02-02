@@ -77,5 +77,9 @@ class ClientFrame:
         """
         self.root.mainloop()
 
+    def simulation_end_handler_func(self):
+        self.start_btn['state'] = tk.NORMAL
+        self.abort_btn['state'] = tk.DISABLED
+    
     def simulation_end_handler(self):
-        self.root.after(100, self.abort_command)
+        self.root.after(100,self.simulation_end_handler_func)
