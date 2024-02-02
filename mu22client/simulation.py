@@ -267,3 +267,5 @@ class Simulation:
             self.__post('/charge',{'charging':'off'})
         self.__worker = None
         if self.__end_callback: self.__end_callback()
+
+__all__ = ('Simulation')

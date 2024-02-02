@@ -24,3 +24,6 @@ class ChargingState(BaseModel):
 
 class ChargingError(BaseModel):
     error:str
+
+
+__all__ = ('ChargingInfo', 'FloatList', 'ChargingState', 'ChargingError')
