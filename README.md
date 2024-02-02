@@ -26,7 +26,7 @@ Total energy consumption < 11kW.
 
 ## The Clilent
 
-The client is written in Python and has a Tk UI. Four graphs are presented in the folowing order:
+The client is written in Python and has a Tk UI. Four graphs are presented in the following order:
 
 * Energy price per hour over 24h.
 * Hourly base load of simulated household over 24h.
