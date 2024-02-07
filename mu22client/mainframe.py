@@ -31,7 +31,7 @@ class ClientFrame:
         self.__root = tk.Tk()
         self.__root.wm_title("MU22 Battery Client")
         # Tk Canvas
-        canvas = FigureCanvasTkAgg(Figure(figsize=(16, 10), dpi=72), master=self.__root)
+        canvas = FigureCanvasTkAgg(Figure(figsize=(16, 8), dpi=72), master=self.__root)
         canvas.get_tk_widget().grid(row = 0, column = 0, columnspan=6)
         # Controls
         self.__simtype_list = tk.Listbox(master=self.__root, height=2)

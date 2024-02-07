@@ -20,14 +20,14 @@ SLEEP_TIME = 0.2
 
 MAX_LOAD_KW = 11
 CHARGING_POWER_KW = 7.4
-EV_TARGET_CHARGE_RATIO = 0.799
+EV_TARGET_SOC = 0.799
 EV_MAX_CAPACITY = 46.3
+EV_START_SOC = 0.2
 
 class Simulation:
     __worker:Thread = None
     __do_abort:bool
     __soc_graph:Axes
-    __state_graph:Axes
     __canvas:FigureCanvasTkAgg
     __fig:Figure
     __base_load_residential_kwh:FloatList
@@ -41,10 +41,9 @@ class Simulation:
         self.__canvas = canvas
         self.__fig = canvas.figure
         self.__fig.set(constrained_layout=True)
-        ax1:Axes = self.__fig.add_subplot(411)
-        ax2:Axes = self.__fig.add_subplot(412)
-        self.__soc_graph = self.__fig.add_subplot(413)
-        self.__state_graph = self.__fig.add_subplot(414)
+        ax1:Axes = self.__fig.add_subplot(311)
+        ax2:Axes = self.__fig.add_subplot(312)
+        self.__soc_graph = self.__fig.add_subplot(313)
 
         # config graphs
         self.__x_lim = {'left':0, 'right':24} # 24h window
@@ -65,10 +64,6 @@ class Simulation:
         ax2.set_xticks(**self.__x_tick)
         ax2.set_title("Residential Base Load in kWh")
         ax2.set_ylabel('kWh')
-
-        self.__state_graph.set_xlim(**self.__x_lim)
-        self.__state_graph.set_xticks(**self.__x_tick)
-        self.__state_graph.set_yticks(ticks=[0,1], labels=['off','on'])
 
         self.__soc_graph.set_xlim(**self.__x_lim)
         self.__soc_graph.set_ylim(**self.__y_lim_soc)
@@ -190,7 +185,7 @@ class Simulation:
         Gets data, does calculations and updated graph.
         """
         # setup
-        target_kWh = EV_MAX_CAPACITY * EV_TARGET_CHARGE_RATIO
+        target_kWh = EV_MAX_CAPACITY * EV_TARGET_SOC
         # state
         charging = False
         last_sim_hour = 0
@@ -203,27 +198,25 @@ class Simulation:
         y_load = [100*info.base_current_load/MAX_LOAD_KW]
         # charging schedule based on simulation type
         if self.__sim_type=='price':
-            self.__state_graph.set_title("Schedule optimized based on price.")
+            opt_label = "Price optimized schedule."
             charging_hours=self.__calculate_minimal_price_hours(info)
         else:
-            self.__state_graph.set_title("Schedule optimized based on load.")
+            opt_label = "Load optimized schedule."
             charging_hours=self.__calculate_minimal_load_hours(info)
-        
-        self.__state_graph.cla()
-        self.__state_graph.stairs(charging_hours)
-        self.__state_graph.set_xlim(**self.__x_lim)
-        self.__state_graph.set_xticks(**self.__x_tick)
-        self.__state_graph.set_title("Optimized charging schedule.")
-        self.__state_graph.set_ylabel('State')
-        self.__state_graph.set_yticks(ticks=[0,1], labels=['off','on'])
-        
+
+        # charging hours states to plot values
+        charging_hours_y = [5 if i else 0 for i in charging_hours]
+        charging_hours_x = range(0,24)
+
+        start_energy = EV_MAX_CAPACITY*EV_START_SOC
+
         # loop
         while True:
             if self.__do_abort: break
             # get state
             info = self.__get('/info',ChargingInfo)
 
-            # time to decimal hours
+            # time
             if info.sim_time_hour < last_sim_hour:
                 info.sim_time_hour = 24 # do this to plot last value
             else: last_sim_hour = info.sim_time_hour
@@ -237,6 +230,13 @@ class Simulation:
                 charging = True
                 self.__post('/charge',{'charging':'on'})
 
+            # energy
+            total_energy_used = info.battery_capacity_kWh - start_energy
+            for i in range(0,info.sim_time_hour):
+                total_energy_used += self.__base_load_residential_kwh[i]
+            if info.sim_time_hour<24:
+                total_energy_used += self.__base_load_residential_kwh[info.sim_time_hour] * (info.sim_time_min/60)
+
             # append simulation data to graph
             x_hour.append(info.sim_time_hour + info.sim_time_min/60)
 
@@ -249,16 +249,23 @@ class Simulation:
 
             # draw
             if not self.__do_abort:
-                self.__soc_graph.cla()
-                self.__soc_graph.plot(x_hour, y_soc, label=f'Current SOC: {int(curr_sock)} %')
-                self.__soc_graph.plot(x_hour, y_load, label=f'Current Load: {int(curr_load)} %')
-                self.__soc_graph.set_title("SOC/Load")
-                self.__soc_graph.set_ylabel('Percent (%)')
-                self.__soc_graph.legend(loc='upper left')
-                self.__soc_graph.set_xlim(**self.__x_lim)
-                self.__soc_graph.set_ylim(**self.__y_lim_soc)
-                self.__soc_graph.set_xticks(**self.__x_tick)
-                self.__canvas.draw()
+                try:
+                    self.__soc_graph.cla()
+
+                    self.__soc_graph.plot(x_hour, y_soc, label=f'Current SOC: {int(curr_sock)} %')
+                    self.__soc_graph.plot(x_hour, y_load, label=f'Current Load: {int(curr_load)} %')
+                    self.__soc_graph.bar(charging_hours_x, charging_hours_y, width=1, align='edge', color='g', label=opt_label)
+
+                    self.__soc_graph.set_title("SOC/Load")
+                    self.__soc_graph.set_ylabel('Percent (%)')
+                    self.__soc_graph.set_xlim(**self.__x_lim)
+                    self.__soc_graph.set_ylim(**self.__y_lim_soc)
+                    self.__soc_graph.set_xticks(**self.__x_tick)
+                    self.__soc_graph.legend(loc='upper left', fancybox=True, framealpha=0.3)
+                    self.__soc_graph.text(10, 80, f'Total Energy Used: {int(total_energy_used)} kWh')
+                    self.__canvas.draw()
+                except:
+                    return
             # end of sim?
             if info.sim_time_hour == 24: break
             else: time.sleep(SLEEP_TIME)
